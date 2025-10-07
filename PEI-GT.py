@@ -147,90 +147,82 @@ for Temp in np.arange(102, 306, 2):
         k_inv_d = (1 / kf_d) * (qv_star_d / c_CO2_d) + (1 / kp) * (qv_star_d / c_CO2_d) + (1 / ks)
         k_d = 1/k_inv_d
 
-
-epsilon_p = 0.71
-epsilon_star = epsilon + epsilon_p * (1-epsilon)
-
-
-
-
-
-
-
-
-    # q* function:
-    def q_star_func(c_val):
-        p_CO2 = c_val * R_mol * Temp / 1000  # mol/m3 to kPa
-        q_mass = q_CO2_Toth(p_CO2, Temp)  # mol/kg
-        return q_mass * rho_bed * omega # mol/m3
+        epsilon_p = 1.0 - rho_p / rho_s
+        epsilon_star = epsilon + epsilon_p * (1-epsilon)
     
-    # Adsorption:
-    nx = 20 # number of spatial points
-    dx = L / nx
-    mesh = Grid1D(dx=dx, nx=nx)
+        # q* function:
+        def q_star_func(c_val):
+            p_CO2 = c_val * R_mol * Temp / 1000  # mol/m3 to kPa
+            q_mass = q_CO2_Toth(p_CO2, Temp)  # mol/kg
+            return q_mass * rho_bed * omega # mol/m3
+        
+        # Adsorption:
+        nx = 20 # number of spatial points
+        dx = L / nx
+        mesh = Grid1D(dx=dx, nx=nx)
+        
+        # Variables
+        c = CellVariable(name="Gas Concentration", mesh=mesh, value=0.0) # mol/m3 Gas phase concentration: initially 0 everywhere
+        q = CellVariable(name="Solid Loading", mesh=mesh, value=0.0) # mol/m3 Solid phase concentration: initially 0 everywhere
+        
+        # Inlet CO2 concentration (mol/m3)
+        c_in = (pCO2_air * 1000) / (R_mol * Temp) # mol/m3
+        
+        # Boundary conditions: Serna-Guerro paper
+        c.constrain(c_in, mesh.facesLeft) # CO2 inlet value fixed at ambient
+        c.faceGrad.constrain(0.0, mesh.facesRight) # zero concentration gradient at outlet
+        
+        v_vector = FaceVariable(mesh=mesh, rank=1, value=v)
+        
+        # PDE
+        mass_balance = (TransientTerm(coeff=epsilon_star, var=c)
+                        == DiffusionTerm(coeff=epsilon * DL, var=c)
+                        - ConvectionTerm(coeff=v_vector, var=c)
+                        - (1 - epsilon_star) * TransientTerm(var=q))
+        
+        # Time loop
+        dt = 0.025
+        steps = 72000 # 30 minutes
+        x = mesh.cellCenters.value[0]
+        
+        for step in range(steps):
+            mass_balance.solve(var=c, dt=dt)
+            q_star_val = q_star_func(c.value)
+            q.setValue(q.value + k * (q_star_val - q.value) * dt)
+         
+        mol_ads = np.trapz(q.value, x) * np.pi * r**2 # mol CO2 in whole column
+        
+        
+        # Desorption:
+        c_d = CellVariable(name="Gas Concentration", mesh=mesh, value=0.0)
+        q_d = CellVariable(name="Solid Loading", mesh=mesh, value=q.value.copy())
+        
+        c_in_des = (pCO2_des * 1000) / (R_mol * Twf) # mol/m3 
+        
+        c_d.constrain(c_in_des, mesh.facesRight)
+        c_d.faceGrad.constrain(0.0, mesh.facesLeft)
+        
+        v_vector_d = FaceVariable(mesh=mesh, rank=1, value=-v)
+        
+        mass_balance_d = (TransientTerm(coeff=epsilon_star, var=c_d)
+                        == DiffusionTerm(coeff=epsilon * DL, var=c_d)
+                        - ConvectionTerm(coeff=v_vector_d, var=c_d)
+                        - (1 - epsilon_star) * TransientTerm(var=q_d))
+        
+        dt_d = 0.025
+        steps_d = 24000 # 10 min desorption
+        x_d = mesh.cellCenters.value[0]
+        
+        for step in range(steps_d):
+            mass_balance_d.solve(var=c_d, dt=dt_d)
+            q_d.setValue(q_d.value + k_d * (q_star_des - q_d.value) * dt_d)
+        
+        mol_des = np.trapz(q_d.value, x) * np.pi * r**2
+        kg_CO2 = (mol_ads - mol_des)*44.01/1000
     
-    # Variables
-    c = CellVariable(name="Gas Concentration", mesh=mesh, value=0.0) # mol/m3 Gas phase concentration: initially 0 everywhere
-    q = CellVariable(name="Solid Loading", mesh=mesh, value=0.0) # mol/m3 Solid phase concentration: initially 0 everywhere
+        writer.writerow([Temp, round(kg_CO2, 6)])
+        print(f"T = {Temp} K, {kg_CO2:.4f} kg captured")
     
-    # Inlet CO2 concentration (mol/m3)
-    c_in = (pCO2_air * 1000) / (R_mol * Temp) # mol/m3
-    
-    # Boundary conditions: Serna-Guerro paper
-    c.constrain(c_in, mesh.facesLeft) # CO2 inlet value fixed at ambient
-    c.faceGrad.constrain(0.0, mesh.facesRight) # zero concentration gradient at outlet
-    
-    v_vector = FaceVariable(mesh=mesh, rank=1, value=v)
-    
-    # PDE
-    mass_balance = (TransientTerm(coeff=epsilon_star, var=c)
-                    == DiffusionTerm(coeff=epsilon * DL, var=c)
-                    - ConvectionTerm(coeff=v_vector, var=c)
-                    - (1 - epsilon_star) * TransientTerm(var=q))
-    
-    # Time loop
-    dt = 0.025
-    steps = 72000 # 30 minutes
-    x = mesh.cellCenters.value[0]
-    
-    for step in range(steps):
-        mass_balance.solve(var=c, dt=dt)
-        q_star_val = q_star_func(c.value)
-        q.setValue(q.value + k * (q_star_val - q.value) * dt)
-     
-    mol_ads = np.trapz(q.value, x) * np.pi * r**2 # mol CO2 in whole column
-    
-    
-    # Desorption:
-    c_d = CellVariable(name="Gas Concentration", mesh=mesh, value=0.0)
-    q_d = CellVariable(name="Solid Loading", mesh=mesh, value=q.value.copy())
-    
-    c_in_des = (pCO2_des * 1000) / (R_mol * Twf) # mol/m3 
-    
-    c_d.constrain(c_in_des, mesh.facesRight)
-    c_d.faceGrad.constrain(0.0, mesh.facesLeft)
-    
-    v_vector_d = FaceVariable(mesh=mesh, rank=1, value=-v)
-    
-    mass_balance_d = (TransientTerm(coeff=epsilon_star, var=c_d)
-                    == DiffusionTerm(coeff=epsilon * DL, var=c_d)
-                    - ConvectionTerm(coeff=v_vector_d, var=c_d)
-                    - (1 - epsilon_star) * TransientTerm(var=q_d))
-    
-    dt_d = 0.025
-    steps_d = 24000 # 10 min desorption
-    x_d = mesh.cellCenters.value[0]
-    
-    for step in range(steps_d):
-        mass_balance_d.solve(var=c_d, dt=dt_d)
-        q_d.setValue(q_d.value + k_d * (q_star_des - q_d.value) * dt_d)
-    
-    mol_des = np.trapz(q_d.value, x) * np.pi * r**2
-    kg_CO2 = (mol_ads - mol_des)*44.01/1000
-
-    writer.writerow([Temp, round(kg_CO2, 6)])
-    print(f"T = {Temp} K, {kg_CO2:.4f} kg captured")
-
-csv_fh.close()
+    csv_fh.close()
 
         
