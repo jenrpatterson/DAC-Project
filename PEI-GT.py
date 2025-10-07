@@ -27,6 +27,7 @@ N = 8280 # number of cells (36 sq in face)
 L = 0.15 # m
 W = 0.15 # m
 H = 0.15 # m
+area = W * H # m2
 w_wall = 0.265e-3 # m, wall thickness
 w2 = 1.676e-3 # m, 1.676mm cell width
 w1 = w2 - w_wall # m, actual channel width
@@ -78,6 +79,12 @@ def q_CO2_Toth(p_CO2, T): # p_CO2 in mbar and T in Kelvin
 
     return q_chem + q_phys # mol capacity CO2 / kg sorbent
 
+# q* function:
+def q_star_func(c_val,T):
+    p_CO2 = c_val * R_mol * T / 100  # mol/m3 to mbar
+    q_mass = q_CO2_Toth(p_CO2, T)  # mol/kg
+    return q_mass * rho_bed * omega # mol/m3
+
 
 # Make .csv
 out_file = "capturePEI-GT.csv"
@@ -91,7 +98,7 @@ if write_header:
 
 # Temperature range: 102 - 306K (Equivalent Temp considering RH)
 for Temp in np.arange(102, 306, 2):
-    for Press in np.arrange(990, 1036, 2):
+    for Press in np.arange(990, 1036, 2):
         
         # Transport variables:
         # adsorption 'k'
@@ -149,12 +156,6 @@ for Temp in np.arange(102, 306, 2):
 
         epsilon_p = 1.0 - rho_p / rho_s
         epsilon_star = epsilon + epsilon_p * (1-epsilon)
-    
-        # q* function:
-        def q_star_func(c_val):
-            p_CO2 = c_val * R_mol * Temp / 1000  # mol/m3 to kPa
-            q_mass = q_CO2_Toth(p_CO2, Temp)  # mol/kg
-            return q_mass * rho_bed * omega # mol/m3
         
         # Adsorption:
         nx = 20 # number of spatial points
@@ -166,7 +167,7 @@ for Temp in np.arange(102, 306, 2):
         q = CellVariable(name="Solid Loading", mesh=mesh, value=0.0) # mol/m3 Solid phase concentration: initially 0 everywhere
         
         # Inlet CO2 concentration (mol/m3)
-        c_in = (pCO2_air * 1000) / (R_mol * Temp) # mol/m3
+        c_in = (pCO2_air * 100) / (R_mol * Temp) # mol/m3
         
         # Boundary conditions: Serna-Guerro paper
         c.constrain(c_in, mesh.facesLeft) # CO2 inlet value fixed at ambient
@@ -187,10 +188,10 @@ for Temp in np.arange(102, 306, 2):
         
         for step in range(steps):
             mass_balance.solve(var=c, dt=dt)
-            q_star_val = q_star_func(c.value)
+            q_star_val = q_star_func(c.value,Temp)
             q.setValue(q.value + k * (q_star_val - q.value) * dt)
          
-        mol_ads = np.trapz(q.value, x) * np.pi * r**2 # mol CO2 in whole column
+        mol_ads = np.trapz(q.value, x) * area # mol CO2 in whole column
         
         
         # Desorption:
@@ -215,14 +216,15 @@ for Temp in np.arange(102, 306, 2):
         
         for step in range(steps_d):
             mass_balance_d.solve(var=c_d, dt=dt_d)
-            q_d.setValue(q_d.value + k_d * (q_star_des - q_d.value) * dt_d)
+            q_star_desin = q_star_func(c_d.value, Twf)
+            q_d.setValue(q_d.value + k_d * (q_star_desin - q_d.value) * dt_d)
         
-        mol_des = np.trapz(q_d.value, x) * np.pi * r**2
+        mol_des = np.trapz(q_d.value, x) * area
         kg_CO2 = (mol_ads - mol_des)*44.01/1000
     
-        writer.writerow([Temp, round(kg_CO2, 6)])
+        writer.writerow([Temp, Press, round(kg_CO2, 6)])
         print(f"T = {Temp} K, {kg_CO2:.4f} kg captured")
     
-    csv_fh.close()
+csv_fh.close()
 
         
